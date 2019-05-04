@@ -12,6 +12,7 @@ set(source_files
   ${PROJECT_SOURCE_DIR}/aubio/src/pitch/pitchyin.c
   ${PROJECT_SOURCE_DIR}/aubio/src/pitch/pitchyinfast.c
   ${PROJECT_SOURCE_DIR}/aubio/src/pitch/pitchyinfft.c
+  ${PROJECT_SOURCE_DIR}/aubio/src/notes/notes.c
   ${PROJECT_SOURCE_DIR}/aubio/src/spectral/fft.c
   ${PROJECT_SOURCE_DIR}/aubio/src/spectral/ooura_fft8g.c
   ${PROJECT_SOURCE_DIR}/aubio/src/spectral/phasevoc.c
@@ -32,7 +33,7 @@ set(source_files
   ${PROJECT_SOURCE_DIR}/aubio/src/mathutils.c
   ${PROJECT_SOURCE_DIR}/src/fft.cc
   ${PROJECT_SOURCE_DIR}/src/tempo.cc
-  ${PROJECT_SOURCE_DIR}/src/onset.cc
+  ${PROJECT_SOURCE_DIR}/src/notes.cc
   ${PROJECT_SOURCE_DIR}/src/pitch.cc)
 
 add_definitions(-DHAVE_CONFIG_H)

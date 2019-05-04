@@ -1231,11 +1231,11 @@ function updateGlobalBufferViews() {
 
 
 var STATIC_BASE = 1024,
-    STACK_BASE = 9312,
+    STACK_BASE = 9472,
     STACKTOP = STACK_BASE,
-    STACK_MAX = 5252192,
-    DYNAMIC_BASE = 5252192,
-    DYNAMICTOP_PTR = 9280;
+    STACK_MAX = 5252352,
+    DYNAMIC_BASE = 5252352,
+    DYNAMICTOP_PTR = 9440;
 
 assert(STACK_BASE % 16 === 0, 'stack must start aligned');
 assert(DYNAMIC_BASE % 16 === 0, 'heap must start aligned');
@@ -1704,8 +1704,8 @@ Module['asm'] = function(global, env, providedBuffer) {
   ;
   // import table
   env['table'] = wasmTable = new WebAssembly.Table({
-    'initial': 741,
-    'maximum': 741,
+    'initial': 997,
+    'maximum': 997,
     'element': 'anyfunc'
   });
   // With the wasm backend __memory_base and __table_base and only needed for
@@ -1727,7 +1727,7 @@ var ASM_CONSTS = [];
 
 
 
-// STATICTOP = STATIC_BASE + 8288;
+// STATICTOP = STATIC_BASE + 8448;
 /* global initializers */  __ATINIT__.push({ func: function() { globalCtors() } });
 
 
@@ -1738,7 +1738,7 @@ var ASM_CONSTS = [];
 
 
 /* no memory initializer */
-var tempDoublePtr = 9296
+var tempDoublePtr = 9456
 assert(tempDoublePtr % 8 == 0);
 
 function copyTempFloat(ptr) { // functions, because inlining this code increases code size too much
@@ -1850,32 +1850,18 @@ function copyTempDouble(ptr) {
   }
 
   
-  function getShiftFromSize(size) {
-      switch (size) {
-          case 1: return 0;
-          case 2: return 1;
-          case 4: return 2;
-          case 8: return 3;
-          default:
-              throw new TypeError('Unknown type size: ' + size);
+  var structRegistrations={};
+  
+  function runDestructors(destructors) {
+      while (destructors.length) {
+          var ptr = destructors.pop();
+          var del = destructors.pop();
+          del(ptr);
       }
     }
   
-  
-  
-  function embind_init_charCodes() {
-      var codes = new Array(256);
-      for (var i = 0; i < 256; ++i) {
-          codes[i] = String.fromCharCode(i);
-      }
-      embind_charCodes = codes;
-    }var embind_charCodes=undefined;function readLatin1String(ptr) {
-      var ret = "";
-      var c = ptr;
-      while (HEAPU8[c]) {
-          ret += embind_charCodes[HEAPU8[c++]];
-      }
-      return ret;
+  function simpleReadValueFromPointer(pointer) {
+      return this['fromWireType'](HEAPU32[pointer >> 2]);
     }
   
   
@@ -1935,13 +1921,7 @@ function copyTempDouble(ptr) {
       };
   
       return errorClass;
-    }var BindingError=undefined;function throwBindingError(message) {
-      throw new BindingError(message);
-    }
-  
-  
-  
-  var InternalError=undefined;function throwInternalError(message) {
+    }var InternalError=undefined;function throwInternalError(message) {
       throw new InternalError(message);
     }function whenDependentTypesAreResolved(myTypes, dependentTypes, getTypeConverters) {
       myTypes.forEach(function(type) {
@@ -1981,6 +1961,105 @@ function copyTempDouble(ptr) {
       if (0 === unregisteredTypes.length) {
           onComplete(typeConverters);
       }
+    }function __embind_finalize_value_object(structType) {
+      var reg = structRegistrations[structType];
+      delete structRegistrations[structType];
+  
+      var rawConstructor = reg.rawConstructor;
+      var rawDestructor = reg.rawDestructor;
+      var fieldRecords = reg.fields;
+      var fieldTypes = fieldRecords.map(function(field) { return field.getterReturnType; }).
+                concat(fieldRecords.map(function(field) { return field.setterArgumentType; }));
+      whenDependentTypesAreResolved([structType], fieldTypes, function(fieldTypes) {
+          var fields = {};
+          fieldRecords.forEach(function(field, i) {
+              var fieldName = field.fieldName;
+              var getterReturnType = fieldTypes[i];
+              var getter = field.getter;
+              var getterContext = field.getterContext;
+              var setterArgumentType = fieldTypes[i + fieldRecords.length];
+              var setter = field.setter;
+              var setterContext = field.setterContext;
+              fields[fieldName] = {
+                  read: function(ptr) {
+                      return getterReturnType['fromWireType'](
+                          getter(getterContext, ptr));
+                  },
+                  write: function(ptr, o) {
+                      var destructors = [];
+                      setter(setterContext, ptr, setterArgumentType['toWireType'](destructors, o));
+                      runDestructors(destructors);
+                  }
+              };
+          });
+  
+          return [{
+              name: reg.name,
+              'fromWireType': function(ptr) {
+                  var rv = {};
+                  for (var i in fields) {
+                      rv[i] = fields[i].read(ptr);
+                  }
+                  rawDestructor(ptr);
+                  return rv;
+              },
+              'toWireType': function(destructors, o) {
+                  // todo: Here we have an opportunity for -O3 level "unsafe" optimizations:
+                  // assume all fields are present without checking.
+                  for (var fieldName in fields) {
+                      if (!(fieldName in o)) {
+                          throw new TypeError('Missing field');
+                      }
+                  }
+                  var ptr = rawConstructor();
+                  for (fieldName in fields) {
+                      fields[fieldName].write(ptr, o[fieldName]);
+                  }
+                  if (destructors !== null) {
+                      destructors.push(rawDestructor, ptr);
+                  }
+                  return ptr;
+              },
+              'argPackAdvance': 8,
+              'readValueFromPointer': simpleReadValueFromPointer,
+              destructorFunction: rawDestructor,
+          }];
+      });
+    }
+
+  
+  function getShiftFromSize(size) {
+      switch (size) {
+          case 1: return 0;
+          case 2: return 1;
+          case 4: return 2;
+          case 8: return 3;
+          default:
+              throw new TypeError('Unknown type size: ' + size);
+      }
+    }
+  
+  
+  
+  function embind_init_charCodes() {
+      var codes = new Array(256);
+      for (var i = 0; i < 256; ++i) {
+          codes[i] = String.fromCharCode(i);
+      }
+      embind_charCodes = codes;
+    }var embind_charCodes=undefined;function readLatin1String(ptr) {
+      var ret = "";
+      var c = ptr;
+      while (HEAPU8[c]) {
+          ret += embind_charCodes[HEAPU8[c++]];
+      }
+      return ret;
+    }
+  
+  
+  
+  var BindingError=undefined;function throwBindingError(message) {
+      throw new BindingError(message);
     }function registerType(rawType, registeredInstance, options) {
       options = options || {};
   
@@ -2366,10 +2445,6 @@ function copyTempDouble(ptr) {
       return ptr;
     }
   
-  
-  function simpleReadValueFromPointer(pointer) {
-      return this['fromWireType'](HEAPU32[pointer >> 2]);
-    }
   
   function RegisteredPointer_getPointee(ptr) {
       if (this.rawGetPointee) {
@@ -2801,14 +2876,6 @@ function copyTempDouble(ptr) {
           array.push(HEAP32[(firstElement >> 2) + i]);
       }
       return array;
-    }
-  
-  function runDestructors(destructors) {
-      while (destructors.length) {
-          var ptr = destructors.pop();
-          var del = destructors.pop();
-          del(ptr);
-      }
     }function __embind_register_class_constructor(
       rawClassType,
       argCount,
@@ -3415,6 +3482,45 @@ function copyTempDouble(ptr) {
       });
     }
 
+  function __embind_register_value_object(
+      rawType,
+      name,
+      constructorSignature,
+      rawConstructor,
+      destructorSignature,
+      rawDestructor
+    ) {
+      structRegistrations[rawType] = {
+          name: readLatin1String(name),
+          rawConstructor: embind__requireFunction(constructorSignature, rawConstructor),
+          rawDestructor: embind__requireFunction(destructorSignature, rawDestructor),
+          fields: [],
+      };
+    }
+
+  function __embind_register_value_object_field(
+      structType,
+      fieldName,
+      getterReturnType,
+      getterSignature,
+      getter,
+      getterContext,
+      setterArgumentType,
+      setterSignature,
+      setter,
+      setterContext
+    ) {
+      structRegistrations[structType].fields.push({
+          fieldName: readLatin1String(fieldName),
+          getterReturnType: getterReturnType,
+          getter: embind__requireFunction(getterSignature, getter),
+          getterContext: getterContext,
+          setterArgumentType: setterArgumentType,
+          setter: embind__requireFunction(setterSignature, setter),
+          setterContext: setterContext,
+      });
+    }
+
   function __embind_register_void(rawType, name) {
       name = readLatin1String(name);
       registerType(rawType, {
@@ -3623,9 +3729,9 @@ function copyTempDouble(ptr) {
       else err('failed to set errno from JS');
       return value;
     } 
+InternalError = Module['InternalError'] = extendError(Error, 'InternalError');;
 embind_init_charCodes();
 BindingError = Module['BindingError'] = extendError(Error, 'BindingError');;
-InternalError = Module['InternalError'] = extendError(Error, 'InternalError');;
 init_ClassHandle();
 init_RegisteredPointer();
 init_embind();;
@@ -3674,6 +3780,8 @@ function nullFunc_fii(x) { err("Invalid function pointer called with signature '
 
 function nullFunc_fiii(x) { err("Invalid function pointer called with signature 'fiii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
+function nullFunc_i(x) { err("Invalid function pointer called with signature 'i'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
+
 function nullFunc_ii(x) { err("Invalid function pointer called with signature 'ii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
 function nullFunc_iii(x) { err("Invalid function pointer called with signature 'iii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
@@ -3690,6 +3798,8 @@ function nullFunc_v(x) { err("Invalid function pointer called with signature 'v'
 
 function nullFunc_vi(x) { err("Invalid function pointer called with signature 'vi'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
+function nullFunc_viif(x) { err("Invalid function pointer called with signature 'viif'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
+
 function nullFunc_viii(x) { err("Invalid function pointer called with signature 'viii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
 function nullFunc_viiii(x) { err("Invalid function pointer called with signature 'viiii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
@@ -3705,6 +3815,7 @@ var asmLibraryArg = {
   "nullFunc_fi": nullFunc_fi,
   "nullFunc_fii": nullFunc_fii,
   "nullFunc_fiii": nullFunc_fiii,
+  "nullFunc_i": nullFunc_i,
   "nullFunc_ii": nullFunc_ii,
   "nullFunc_iii": nullFunc_iii,
   "nullFunc_iiii": nullFunc_iiii,
@@ -3713,6 +3824,7 @@ var asmLibraryArg = {
   "nullFunc_jiji": nullFunc_jiji,
   "nullFunc_v": nullFunc_v,
   "nullFunc_vi": nullFunc_vi,
+  "nullFunc_viif": nullFunc_viif,
   "nullFunc_viii": nullFunc_viii,
   "nullFunc_viiii": nullFunc_viiii,
   "ClassHandle": ClassHandle,
@@ -3732,6 +3844,7 @@ var asmLibraryArg = {
   "___syscall146": ___syscall146,
   "___syscall54": ___syscall54,
   "___syscall6": ___syscall6,
+  "__embind_finalize_value_object": __embind_finalize_value_object,
   "__embind_register_bool": __embind_register_bool,
   "__embind_register_class": __embind_register_class,
   "__embind_register_class_constructor": __embind_register_class_constructor,
@@ -3743,6 +3856,8 @@ var asmLibraryArg = {
   "__embind_register_memory_view": __embind_register_memory_view,
   "__embind_register_std_string": __embind_register_std_string,
   "__embind_register_std_wstring": __embind_register_std_wstring,
+  "__embind_register_value_object": __embind_register_value_object,
+  "__embind_register_value_object_field": __embind_register_value_object_field,
   "__embind_register_void": __embind_register_void,
   "__emval_addMethodCaller": __emval_addMethodCaller,
   "__emval_allocateDestructors": __emval_allocateDestructors,
@@ -3948,6 +4063,10 @@ var dynCall_fiii = Module["dynCall_fiii"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["dynCall_fiii"].apply(null, arguments) };
+var dynCall_i = Module["dynCall_i"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_i"].apply(null, arguments) };
 var dynCall_ii = Module["dynCall_ii"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
@@ -3980,6 +4099,10 @@ var dynCall_vi = Module["dynCall_vi"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["dynCall_vi"].apply(null, arguments) };
+var dynCall_viif = Module["dynCall_viif"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_viif"].apply(null, arguments) };
 var dynCall_viii = Module["dynCall_viii"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
